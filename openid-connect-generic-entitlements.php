@@ -32,18 +32,27 @@ class OpenIdConnectEntitlements
         $sso_entitlements_base_url = 'https://sso-test.onadvantagecs.com';
         
         $this->sso_entitlements_client = new GuzzleHttp\Client([
-            'base_uri' => $sso_entitlements_base_url . '/api/' . $sso_entitlements_directory . '/',
-            'timeout'  => 15.0,
+            'base_uri'      => $sso_entitlements_base_url . '/api/' . $sso_entitlements_directory . '/',
+            'timeout'       => 15.0,
+            'http_errors'   => false
         ]);        
 
-        add_action('wp_login', array( $this, 'map_user_entitlements' ), 10, 2);
+        add_action('wp_login', function($user_login, $user) { return $this->refresh_user_entitlements($user); }, 10, 2);
+        add_filter('openid-connect-generic-login-button-text', function($text) { return 'Login'; });
+        add_action('parse_request', function($query) {
+            if ( isset( $_GET['refresh-entitlements'] ) && $_GET['refresh-entitlements'] === '1' && is_user_logged_in() )
+            {
+                $this->refresh_user_entitlements(wp_get_current_user());
+            }
+            return $query;
+        });
     }
     
     private function __clone() {}
     private function __sleep() {}
     private function __wakeup() {}
 
-    public function map_user_entitlements( $user_login, $user ) 
+    public function refresh_user_entitlements( $user ) 
     {
         $access_token = $this->get_user_access_token( $user );
         if (empty( $access_token )) {
@@ -57,10 +66,11 @@ class OpenIdConnectEntitlements
             ]
         ]);
         
-        if ($response->getStatusCode() == 200) {
-            $json = (string)$response->getBody();
-            error_log('Received entitlements response for user ' . $user->ID . ': ' . $json);
-            $data = json_decode($json);
+        $body = (string)$response->getBody();
+        $statusCode = $response->getStatusCode();
+        if ($statusCode == 200) {
+            error_log('Received entitlements response for user ' . $user->ID . ': ' . $body);
+            $data = json_decode($body);
             $old_levels = rua_get_user_levels($user->ID);
             $user_levels = array();
             
@@ -81,6 +91,12 @@ class OpenIdConnectEntitlements
             foreach (array_diff($old_levels, $user_levels) as $level) {
                 rua_remove_user_level($user->ID, $level);
             }
+        } elseif ($statusCode == 404) {
+            error_log('Entitlements query for user ' . $user->ID . ' returned: not found');
+        } 
+        else {
+            error_log('Entitlements query for user ' . $user->ID . ' resulted in ' . $statusCode .
+                ' status code with response message: ' . $body);
         }
     }
     
